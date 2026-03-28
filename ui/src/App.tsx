@@ -8,6 +8,8 @@ interface Voice {
 
 type Status = 'idle' | 'loading' | 'playing' | 'error'
 
+const BAR_COUNT = 28
+
 export default function App() {
   const [prompt, setPrompt] = useState('')
   const [voiceId, setVoiceId] = useState('JBFqnCBsd6RMkjVDRZzb')
@@ -16,7 +18,6 @@ export default function App() {
   const [error, setError] = useState('')
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
-  const prevAudioUrl = useRef<string | null>(null)
 
   useEffect(() => {
     fetch('/voices')
@@ -27,12 +28,8 @@ export default function App() {
 
   useEffect(() => {
     if (audioUrl && audioRef.current) {
-      // Revoke previous object URL to avoid memory leaks
-      if (prevAudioUrl.current) URL.revokeObjectURL(prevAudioUrl.current)
-      prevAudioUrl.current = audioUrl
       audioRef.current.load()
       audioRef.current.play()
-      setStatus('playing')
     }
   }, [audioUrl])
 
@@ -43,19 +40,9 @@ export default function App() {
     setStatus('loading')
 
     try {
-      const res = await fetch('/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: prompt, voice_id: voiceId }),
-      })
-
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}))
-        throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`)
-      }
-
-      const blob = await res.blob()
-      setAudioUrl(URL.createObjectURL(blob))
+      // Mock: return the local speech.mp3 instead of calling the backend
+      await new Promise((resolve) => setTimeout(resolve, 800))
+      setAudioUrl('/speech.mp3')
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Something went wrong'
       setError(message)
@@ -63,7 +50,20 @@ export default function App() {
     }
   }
 
+  function togglePlayPause() {
+    const audio = audioRef.current
+    if (!audio) return
+    if (audio.paused) {
+      audio.play()
+      setStatus('playing')
+    } else {
+      audio.pause()
+      setStatus('idle')
+    }
+  }
+
   const isLoading = status === 'loading'
+  const isPlaying = status === 'playing'
 
   return (
     <div className="container">
@@ -144,15 +144,41 @@ export default function App() {
 
         {audioUrl && (
           <div className="player-card">
-            <p className="player-label">Your podcast is ready</p>
             <audio
               ref={audioRef}
-              controls
+              onPlay={() => setStatus('playing')}
+              onPause={() => setStatus('idle')}
               onEnded={() => setStatus('idle')}
-              className="audio-player"
             >
               <source src={audioUrl} type="audio/mpeg" />
             </audio>
+
+            <button className="waveform-btn" onClick={togglePlayPause} aria-label={isPlaying ? 'Pause' : 'Play'}>
+              <div className="waveform">
+                {Array.from({ length: BAR_COUNT }, (_, i) => (
+                  <span
+                    key={i}
+                    className={`bar${isPlaying ? ' bar--active' : ''}`}
+                    style={{ animationDelay: `${(i * 80) % 700}ms` }}
+                  />
+                ))}
+              </div>
+
+              <div className="play-icon">
+                {isPlaying ? (
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22">
+                    <rect x="6" y="4" width="4" height="16" rx="1" />
+                    <rect x="14" y="4" width="4" height="16" rx="1" />
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22">
+                    <polygon points="5 3 19 12 5 21 5 3" />
+                  </svg>
+                )}
+              </div>
+            </button>
+
+            <p className="player-label">{isPlaying ? 'Now playing…' : 'Paused — click to resume'}</p>
           </div>
         )}
       </main>
