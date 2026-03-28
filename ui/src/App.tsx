@@ -255,12 +255,18 @@ export default function App() {
 
               <label className="field">
                 <span className="label">Language</span>
-                <input
-                  className="input"
+                <select
+                  className="select"
                   value={locale}
                   onChange={(event) => setLocale(event.target.value)}
                   disabled={isGenerating}
-                />
+                >
+                  <option value="en-US">English (US)</option>
+                  <option value="zh-CN">Chinese (Simplified)</option>
+                  <option value="es-ES">Spanish</option>
+                  <option value="hi-IN">Hindi</option>
+                  <option value="ar-SA">Arabic</option>
+                </select>
               </label>
 
               <label className="field">
