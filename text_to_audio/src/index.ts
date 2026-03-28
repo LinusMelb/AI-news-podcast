@@ -2,13 +2,11 @@ import "dotenv/config";
 import express from "express";
 import type { Request, Response } from "express";
 import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
-import OpenAI from "openai";
 
 const app = express();
 app.use(express.json());
 
 const elevenlabs = new ElevenLabsClient({ apiKey: process.env.ELEVENLABS_API_KEY ?? "" });
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const DEFAULT_SCRIPT_MODEL = process.env.OPENAI_SCRIPT_MODEL ?? "gpt-5-codex";
 
 interface TTSRequest {
