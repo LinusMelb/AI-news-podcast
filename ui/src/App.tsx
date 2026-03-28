@@ -60,7 +60,7 @@ function formatPublishedAt(value?: string): string {
 
 export default function App() {
   const [voiceId, setVoiceId] = useState(DEFAULT_VOICE_ID)
-  const [voices, setVoices] = useState<Voice[]>([])
+  const [voices] = useState<Voice[]>([])
   const [feedStatus, setFeedStatus] = useState<FeedStatus>('idle')
   const [status, setStatus] = useState<Status>('idle')
   const [error, setError] = useState('')
@@ -75,20 +75,20 @@ export default function App() {
   const audioRef = useRef<HTMLAudioElement>(null)
   const previousAudioUrl = useRef<string | null>(null)
 
-  useEffect(() => {
-    fetch('/voices')
-      .then(async (response) => {
-        if (!response.ok) {
-          throw new Error('Unable to load voices')
-        }
+  // useEffect(() => {
+  //   fetch('/voices')
+  //     .then(async (response) => {
+  //       if (!response.ok) {
+  //         throw new Error('Unable to load voices')
+  //       }
 
-        return response.json() as Promise<Voice[]>
-      })
-      .then((data) => setVoices(data))
-      .catch(() => {
-        // Voice selection is helpful but not required for the rest of the app.
-      })
-  }, [])
+  //       return response.json() as Promise<Voice[]>
+  //     })
+  //     .then((data) => setVoices(data))
+  //     .catch(() => {
+  //       // Voice selection is helpful but not required for the rest of the app.
+  //     })
+  // }, [])
 
   useEffect(() => {
     void loadFeeds()
@@ -211,9 +211,9 @@ export default function App() {
       <div className="news-glow news-glow--right" />
 
       <div className="container">
-        <header className="hero">
+        {/* <header className="hero">
           <p className="eyebrow">Big Tech Wire</p>
-          <h1>Turn live tech headlines into an audio briefing.</h1>
+          <h2>Turn live tech headlines into an audio briefing.</h2>
           <p className="subtitle">
             Pull stories from major tech outlets, pick the ones you want, and generate a spoken roundup in one pass.
           </p>
@@ -228,7 +228,7 @@ export default function App() {
               <strong>{selectedStories.length} stories in briefing</strong>
             </div>
           </div>
-        </header>
+        </header> */}
 
         <main className="layout">
           <section className="panel panel--control">
@@ -254,7 +254,7 @@ export default function App() {
               </label>
 
               <label className="field">
-                <span className="label">Locale</span>
+                <span className="label">Language</span>
                 <input
                   className="input"
                   value={locale}
@@ -375,10 +375,31 @@ export default function App() {
 
             {audioUrl && (
               <div className="player-card">
-                <p className="player-label">Audio briefing ready</p>
-                <audio ref={audioRef} controls onEnded={() => setStatus('idle')} className="audio-player">
+                <audio ref={audioRef} onEnded={() => setStatus('idle')} style={{ display: 'none' }}>
                   <source src={audioUrl} type="audio/mpeg" />
                 </audio>
+                <div className="waveform-row">
+                  <div className={`waveform${status === 'playing' ? ' waveform--playing' : ''}`}>
+                    {Array.from({ length: 24 }, (_, i) => (
+                      <span key={i} className="waveform-bar" style={{ animationDelay: `${(i * 0.07) % 0.8}s` }} />
+                    ))}
+                  </div>
+                  <button
+                    className="ghost-button"
+                    onClick={() => {
+                      if (!audioRef.current) return
+                      if (status === 'playing') {
+                        audioRef.current.pause()
+                        setStatus('idle')
+                      } else {
+                        void audioRef.current.play()
+                        setStatus('playing')
+                      }
+                    }}
+                  >
+                    {status === 'playing' ? 'Pause' : 'Play'}
+                  </button>
+                </div>
               </div>
             )}
           </section>

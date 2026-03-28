@@ -2,12 +2,17 @@ import "dotenv/config";
 import express from "express";
 import type { Request, Response } from "express";
 import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
+import { createClient } from "@insforge/sdk";
 
 const app = express();
 app.use(express.json());
 
 const elevenlabs = new ElevenLabsClient({ apiKey: process.env.ELEVENLABS_API_KEY ?? "" });
-const DEFAULT_SCRIPT_MODEL = process.env.OPENAI_SCRIPT_MODEL ?? "gpt-5-codex";
+const insforge = createClient({
+  baseUrl: process.env.INSFORGE_URL ?? "https://bdntn35q.us-east.insforge.app",
+  anonKey: process.env.INSFORGE_API_KEY ?? "",
+});
+const DEFAULT_SCRIPT_MODEL = process.env.INSFORGE_SCRIPT_MODEL ?? "anthropic/claude-sonnet-4.5";
 
 interface TTSRequest {
   text: string;
@@ -68,49 +73,6 @@ function formatNewsItems(news: NewsItem[]): string {
     .join("\n\n");
 }
 
-function extractResponseText(response: unknown): string {
-  if (
-    typeof response === "object" &&
-    response !== null &&
-    "output_text" in response &&
-    typeof response.output_text === "string"
-  ) {
-    return response.output_text.trim();
-  }
-
-  if (
-    typeof response === "object" &&
-    response !== null &&
-    "output" in response &&
-    Array.isArray(response.output)
-  ) {
-    const texts: string[] = [];
-
-    for (const item of response.output) {
-      if (
-        typeof item === "object" &&
-        item !== null &&
-        "content" in item &&
-        Array.isArray(item.content)
-      ) {
-        for (const contentItem of item.content) {
-          if (
-            typeof contentItem === "object" &&
-            contentItem !== null &&
-            "text" in contentItem &&
-            typeof contentItem.text === "string"
-          ) {
-            texts.push(contentItem.text);
-          }
-        }
-      }
-    }
-
-    return texts.join("\n").trim();
-  }
-
-  return "";
-}
 
 function decodeXmlEntities(value: string): string {
   return value
@@ -404,12 +366,12 @@ ${formatNewsItems(news)}
   `.trim();
 
   try {
-    const response = await openai.responses.create({
+    const response = await insforge.ai.chat.completions.create({
       model,
-      input: prompt,
+      messages: [{ role: "user", content: prompt }],
     });
 
-    const script = extractResponseText(response);
+    const script = response.choices[0]?.message?.content?.trim() ?? "";
 
     if (!script) {
       res.status(502).json({ error: "Model returned an empty script" });
@@ -426,7 +388,7 @@ ${formatNewsItems(news)}
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    console.error("OpenAI script generation error:", message);
+    console.error("InsForge script generation error:", message);
     res.status(500).json({ error: "Failed to generate podcast script" });
   }
 });
