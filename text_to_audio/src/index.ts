@@ -1,59 +1,54 @@
+import "dotenv/config";
 import express from "express";
 import type { Request, Response } from "express";
-import OpenAI from "openai";
+import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
 
 const app = express();
 app.use(express.json());
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-const VOICES = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"] as const;
-type Voice = (typeof VOICES)[number];
+const elevenlabs = new ElevenLabsClient({ apiKey: process.env.ELEVENLABS_API_KEY ?? "" });
 
 interface TTSRequest {
   text: string;
-  voice?: Voice;
-  speed?: number; // 0.25 to 4.0
+  voice_id?: string; // ElevenLabs voice ID
 }
 
 app.post("/tts", async (req: Request<{}, {}, TTSRequest>, res: Response) => {
-  const { text, voice = "alloy", speed = 1.0 } = req.body;
+  const { text, voice_id = "JBFqnCBsd6RMkjVDRZzb" } = req.body; // default: "George"
 
   if (!text || typeof text !== "string" || text.trim().length === 0) {
     res.status(400).json({ error: "text is required and must be a non-empty string" });
     return;
   }
 
-  if (!VOICES.includes(voice)) {
-    res.status(400).json({ error: `voice must be one of: ${VOICES.join(", ")}` });
-    return;
-  }
-
-  if (typeof speed !== "number" || speed < 0.25 || speed > 4.0) {
-    res.status(400).json({ error: "speed must be a number between 0.25 and 4.0" });
-    return;
-  }
-
   try {
-    const mp3 = await openai.audio.speech.create({
-      model: "tts-1",
-      voice,
-      input: text,
-      speed,
+    const audioStream = await elevenlabs.textToSpeech.convert(voice_id, {
+      text,
+      modelId: "eleven_multilingual_v2",
+      outputFormat: "mp3_44100_128",
     });
 
-    const buffer = Buffer.from(await mp3.arrayBuffer());
     res.set("Content-Type", "audio/mpeg");
     res.set("Content-Disposition", "attachment; filename=speech.mp3");
-    res.send(buffer);
+
+    for await (const chunk of audioStream) {
+      res.write(chunk);
+    }
+    res.end();
   } catch (err: any) {
-    console.error("OpenAI TTS error:", err?.message ?? err);
+    console.error("ElevenLabs TTS error:", err?.message ?? err);
     res.status(500).json({ error: "Failed to generate audio" });
   }
 });
 
-app.get("/voices", (_req: Request, res: Response) => {
-  res.json({ voices: VOICES });
+app.get("/voices", async (_req: Request, res: Response) => {
+  try {
+    const { voices } = await elevenlabs.voices.getAll();
+    res.json(voices.map((v) => ({ id: v.voiceId, name: v.name })));
+  } catch (err: any) {
+    console.error("ElevenLabs voices error:", err?.message ?? err);
+    res.status(500).json({ error: "Failed to fetch voices" });
+  }
 });
 
 const PORT = process.env.PORT ?? 3000;
