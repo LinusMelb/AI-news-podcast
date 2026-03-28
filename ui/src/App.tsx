@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 
 interface Voice {
@@ -6,55 +6,194 @@ interface Voice {
   name: string
 }
 
+interface FeedSource {
+  id: string
+  name: string
+}
+
+interface NewsItem {
+  id?: string
+  title: string
+  summary?: string
+  source?: string
+  publishedAt?: string
+  url?: string
+}
+
+interface NewsFeedResponse {
+  sources: FeedSource[]
+  items: NewsItem[]
+}
+
+interface PodcastScriptResponse {
+  script: string
+}
+
 type Status = 'idle' | 'loading' | 'playing' | 'error'
+type FeedStatus = 'idle' | 'loading' | 'ready' | 'error'
+
+const DEFAULT_VOICE_ID = 'JBFqnCBsd6RMkjVDRZzb'
+const DEFAULT_TOPIC = 'Big tech news roundup'
+const DEFAULT_LOCALE = 'en-US'
+const DEFAULT_DURATION = 45
+const FEED_LIMIT = 18
+
+function getStoryId(item: NewsItem): string {
+  return item.id ?? item.url ?? item.title
+}
+
+function formatPublishedAt(value?: string): string {
+  if (!value) return 'Fresh from the wire'
+
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return value
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(date)
+}
 
 export default function App() {
-  const [prompt, setPrompt] = useState('')
-  const [voiceId, setVoiceId] = useState('JBFqnCBsd6RMkjVDRZzb')
+  const [voiceId, setVoiceId] = useState(DEFAULT_VOICE_ID)
   const [voices, setVoices] = useState<Voice[]>([])
+  const [feedStatus, setFeedStatus] = useState<FeedStatus>('idle')
   const [status, setStatus] = useState<Status>('idle')
   const [error, setError] = useState('')
+  const [newsItems, setNewsItems] = useState<NewsItem[]>([])
+  const [feedSources, setFeedSources] = useState<FeedSource[]>([])
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [topic, setTopic] = useState(DEFAULT_TOPIC)
+  const [locale, setLocale] = useState(DEFAULT_LOCALE)
+  const [durationSeconds, setDurationSeconds] = useState(DEFAULT_DURATION)
+  const [script, setScript] = useState('')
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
-  const prevAudioUrl = useRef<string | null>(null)
+  const previousAudioUrl = useRef<string | null>(null)
 
   useEffect(() => {
     fetch('/voices')
-      .then((r) => r.json())
-      .then((data: Voice[]) => setVoices(data))
-      .catch(() => {/* voices list is optional */})
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error('Unable to load voices')
+        }
+
+        return response.json() as Promise<Voice[]>
+      })
+      .then((data) => setVoices(data))
+      .catch(() => {
+        // Voice selection is helpful but not required for the rest of the app.
+      })
   }, [])
 
   useEffect(() => {
-    if (audioUrl && audioRef.current) {
-      // Revoke previous object URL to avoid memory leaks
-      if (prevAudioUrl.current) URL.revokeObjectURL(prevAudioUrl.current)
-      prevAudioUrl.current = audioUrl
-      audioRef.current.load()
-      audioRef.current.play()
-      setStatus('playing')
+    void loadFeeds()
+  }, [])
+
+  useEffect(() => {
+    if (!audioUrl || !audioRef.current) {
+      return
     }
+
+    if (previousAudioUrl.current) {
+      URL.revokeObjectURL(previousAudioUrl.current)
+    }
+
+    previousAudioUrl.current = audioUrl
+    audioRef.current.load()
+    void audioRef.current.play()
+    setStatus('playing')
   }, [audioUrl])
 
-  async function handleGenerate() {
-    if (!prompt.trim()) return
+  useEffect(() => {
+    return () => {
+      if (previousAudioUrl.current) {
+        URL.revokeObjectURL(previousAudioUrl.current)
+      }
+    }
+  }, [])
+
+  const selectedStories = useMemo(
+    () => newsItems.filter((item) => selectedIds.includes(getStoryId(item))),
+    [newsItems, selectedIds],
+  )
+
+  async function loadFeeds() {
+    setFeedStatus('loading')
     setError('')
-    setAudioUrl(null)
-    setStatus('loading')
 
     try {
-      const res = await fetch('/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: prompt, voice_id: voiceId }),
-      })
-
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}))
-        throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`)
+      const response = await fetch(`/news-feed?limit=${FEED_LIMIT}`)
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        throw new Error((body as { error?: string }).error ?? 'Unable to fetch news feeds')
       }
 
-      const blob = await res.blob()
+      const data = (await response.json()) as NewsFeedResponse
+      setNewsItems(data.items)
+      setFeedSources(data.sources)
+      setSelectedIds(data.items.slice(0, 4).map((item) => getStoryId(item)))
+      setFeedStatus('ready')
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Unable to fetch tech headlines'
+      setError(message)
+      setFeedStatus('error')
+    }
+  }
+
+  function toggleStory(id: string) {
+    setSelectedIds((current) =>
+      current.includes(id) ? current.filter((itemId) => itemId !== id) : [...current, id],
+    )
+  }
+
+  async function handleGenerateBriefing() {
+    if (selectedStories.length === 0) {
+      setError('Pick at least one story before generating a briefing.')
+      return
+    }
+
+    setError('')
+    setStatus('loading')
+    setAudioUrl(null)
+    setScript('')
+
+    try {
+      const scriptResponse = await fetch('/podcast-script', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          topic: topic.trim() || DEFAULT_TOPIC,
+          locale,
+          durationSeconds,
+          news: selectedStories,
+        }),
+      })
+
+      if (!scriptResponse.ok) {
+        const body = await scriptResponse.json().catch(() => ({}))
+        throw new Error((body as { error?: string }).error ?? 'Unable to write the podcast script')
+      }
+
+      const scriptBody = (await scriptResponse.json()) as PodcastScriptResponse
+      setScript(scriptBody.script)
+
+      const audioResponse = await fetch('/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: scriptBody.script, voice_id: voiceId }),
+      })
+
+      if (!audioResponse.ok) {
+        const body = await audioResponse.json().catch(() => ({}))
+        throw new Error((body as { error?: string }).error ?? 'Unable to generate audio')
+      }
+
+      const blob = await audioResponse.blob()
       setAudioUrl(URL.createObjectURL(blob))
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Something went wrong'
@@ -63,99 +202,190 @@ export default function App() {
     }
   }
 
-  const isLoading = status === 'loading'
+  const isGenerating = status === 'loading'
+  const canGenerate = !isGenerating && selectedStories.length > 0 && feedStatus !== 'loading'
 
   return (
-    <div className="container">
-      <header className="header">
-        <div className="header-icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="32" height="32">
-            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-            <line x1="12" y1="19" x2="12" y2="23" />
-            <line x1="8" y1="23" x2="16" y2="23" />
-          </svg>
-        </div>
-        <h1>AI News Podcast</h1>
-        <p className="subtitle">Type a topic or paste text — get an audio briefing instantly</p>
-      </header>
+    <div className="page-shell">
+      <div className="news-glow news-glow--left" />
+      <div className="news-glow news-glow--right" />
 
-      <main className="main">
-        <div className="card">
-          <label htmlFor="prompt-input" className="label">Your prompt</label>
-          <textarea
-            id="prompt-input"
-            className="textarea"
-            placeholder="e.g. Summarize today's top tech news stories..."
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            rows={5}
-            disabled={isLoading}
-          />
+      <div className="container">
+        <header className="hero">
+          <p className="eyebrow">Big Tech Wire</p>
+          <h1>Turn live tech headlines into an audio briefing.</h1>
+          <p className="subtitle">
+            Pull stories from major tech outlets, pick the ones you want, and generate a spoken roundup in one pass.
+          </p>
 
-          {voices.length > 0 && (
-            <div className="voice-row">
-              <label htmlFor="voice-select" className="label">Voice</label>
-              <select
-                id="voice-select"
-                className="select"
-                value={voiceId}
-                onChange={(e) => setVoiceId(e.target.value)}
-                disabled={isLoading}
-              >
-                {voices.map((v) => (
-                  <option key={v.id} value={v.id}>{v.name}</option>
-                ))}
-              </select>
+          <div className="hero-meta">
+            <div>
+              <span className="meta-label">Sources</span>
+              <strong>{feedSources.length || 5} outlets tracked</strong>
             </div>
-          )}
+            <div>
+              <span className="meta-label">Selection</span>
+              <strong>{selectedStories.length} stories in briefing</strong>
+            </div>
+          </div>
+        </header>
 
-          <button
-            className={`btn${isLoading ? ' btn--loading' : ''}`}
-            onClick={handleGenerate}
-            disabled={isLoading || !prompt.trim()}
-          >
-            {isLoading ? (
-              <>
-                <span className="spinner" />
-                Generating…
-              </>
+        <main className="layout">
+          <section className="panel panel--control">
+            <div className="panel-heading">
+              <div>
+                <p className="section-kicker">Studio</p>
+                <h2>Build your briefing</h2>
+              </div>
+              <button className="ghost-button" onClick={() => void loadFeeds()} disabled={feedStatus === 'loading'}>
+                {feedStatus === 'loading' ? 'Refreshing...' : 'Refresh feed'}
+              </button>
+            </div>
+
+            <div className="control-grid">
+              <label className="field">
+                <span className="label">Briefing topic</span>
+                <input
+                  className="input"
+                  value={topic}
+                  onChange={(event) => setTopic(event.target.value)}
+                  disabled={isGenerating}
+                />
+              </label>
+
+              <label className="field">
+                <span className="label">Locale</span>
+                <input
+                  className="input"
+                  value={locale}
+                  onChange={(event) => setLocale(event.target.value)}
+                  disabled={isGenerating}
+                />
+              </label>
+
+              <label className="field">
+                <span className="label">Approx. duration</span>
+                <select
+                  className="select"
+                  value={durationSeconds}
+                  onChange={(event) => setDurationSeconds(Number(event.target.value))}
+                  disabled={isGenerating}
+                >
+                  <option value={30}>30 seconds</option>
+                  <option value={45}>45 seconds</option>
+                  <option value={60}>60 seconds</option>
+                  <option value={90}>90 seconds</option>
+                </select>
+              </label>
+
+              <label className="field">
+                <span className="label">Voice</span>
+                <select
+                  className="select"
+                  value={voiceId}
+                  onChange={(event) => setVoiceId(event.target.value)}
+                  disabled={isGenerating || voices.length === 0}
+                >
+                  {voices.length > 0 ? (
+                    voices.map((voice) => (
+                      <option key={voice.id} value={voice.id}>
+                        {voice.name}
+                      </option>
+                    ))
+                  ) : (
+                    <option value={DEFAULT_VOICE_ID}>Default voice</option>
+                  )}
+                </select>
+              </label>
+            </div>
+
+            <button className={`primary-button${isGenerating ? ' primary-button--loading' : ''}`} onClick={handleGenerateBriefing} disabled={!canGenerate}>
+              {isGenerating ? 'Writing and voicing briefing...' : 'Generate podcast briefing'}
+            </button>
+          </section>
+
+          <section className="panel panel--feed">
+            <div className="panel-heading">
+              <div>
+                <p className="section-kicker">Headlines</p>
+                <h2>Big tech feeds</h2>
+              </div>
+              <p className="helper-text">Choose the stories you want to include.</p>
+            </div>
+
+            <div className="sources-row">
+              {feedSources.map((source) => (
+                <span key={source.id} className="source-pill">
+                  {source.name}
+                </span>
+              ))}
+            </div>
+
+            <div className="story-list">
+              {newsItems.map((item) => {
+                const itemId = getStoryId(item)
+                const checked = selectedIds.includes(itemId)
+
+                return (
+                  <label key={itemId} className={`story-card${checked ? ' story-card--selected' : ''}`}>
+                    <input
+                      className="story-checkbox"
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleStory(itemId)}
+                      disabled={isGenerating}
+                    />
+                    <div className="story-copy">
+                      <div className="story-meta">
+                        <span>{item.source ?? 'Tech news'}</span>
+                        <span>{formatPublishedAt(item.publishedAt)}</span>
+                      </div>
+                      <h3>{item.title}</h3>
+                      {item.summary && <p>{item.summary}</p>}
+                      {item.url && (
+                        <a href={item.url} target="_blank" rel="noreferrer" className="story-link">
+                          Read source
+                        </a>
+                      )}
+                    </div>
+                  </label>
+                )
+              })}
+            </div>
+          </section>
+
+          <section className="panel panel--output">
+            <div className="panel-heading">
+              <div>
+                <p className="section-kicker">Output</p>
+                <h2>Script and playback</h2>
+              </div>
+            </div>
+
+            {script ? (
+              <div className="script-card">
+                <p className="script-label">Generated script</p>
+                <p className="script-body">{script}</p>
+              </div>
             ) : (
-              <>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18">
-                  <polygon points="5 3 19 12 5 21 5 3" />
-                </svg>
-                Generate Podcast
-              </>
+              <div className="empty-state">
+                Generate a briefing to preview the script and audio here.
+              </div>
             )}
-          </button>
-        </div>
 
-        {error && (
-          <div className="error-banner">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
-              <circle cx="12" cy="12" r="10" />
-              <line x1="12" y1="8" x2="12" y2="12" />
-              <line x1="12" y1="16" x2="12.01" y2="16" />
-            </svg>
-            {error}
-          </div>
-        )}
+            {audioUrl && (
+              <div className="player-card">
+                <p className="player-label">Audio briefing ready</p>
+                <audio ref={audioRef} controls onEnded={() => setStatus('idle')} className="audio-player">
+                  <source src={audioUrl} type="audio/mpeg" />
+                </audio>
+              </div>
+            )}
+          </section>
+        </main>
 
-        {audioUrl && (
-          <div className="player-card">
-            <p className="player-label">Your podcast is ready</p>
-            <audio
-              ref={audioRef}
-              controls
-              onEnded={() => setStatus('idle')}
-              className="audio-player"
-            >
-              <source src={audioUrl} type="audio/mpeg" />
-            </audio>
-          </div>
-        )}
-      </main>
+        {error && <div className="error-banner">{error}</div>}
+      </div>
     </div>
   )
 }

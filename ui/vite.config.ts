@@ -6,6 +6,8 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
+      '/news-feed': 'http://localhost:3000',
+      '/podcast-script': 'http://localhost:3000',
       '/tts': 'http://localhost:3000',
       '/voices': 'http://localhost:3000',
     },

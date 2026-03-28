@@ -17,11 +17,23 @@ interface TTSRequest {
 }
 
 interface NewsItem {
+  id?: string;
   title: string;
   summary?: string;
   source?: string;
   publishedAt?: string;
   url?: string;
+}
+
+interface FeedSource {
+  id: string;
+  name: string;
+  url: string;
+}
+
+interface FeedResponse {
+  sources: Array<Pick<FeedSource, "id" | "name">>;
+  items: NewsItem[];
 }
 
 interface PodcastScriptRequest {
@@ -31,6 +43,16 @@ interface PodcastScriptRequest {
   durationSeconds?: number;
   model?: string;
 }
+
+const NEWS_FEEDS: FeedSource[] = [
+  { id: "techcrunch", name: "TechCrunch", url: "https://techcrunch.com/feed/" },
+  { id: "the-verge", name: "The Verge", url: "https://www.theverge.com/rss/index.xml" },
+  { id: "ars-technica", name: "Ars Technica", url: "https://feeds.arstechnica.com/arstechnica/index" },
+  { id: "wired", name: "Wired", url: "https://www.wired.com/feed/rss" },
+  { id: "engadget", name: "Engadget", url: "https://www.engadget.com/rss.xml" },
+];
+const DEFAULT_NEWS_LIMIT = 15;
+const MAX_NEWS_LIMIT = 40;
 
 function formatNewsItems(news: NewsItem[]): string {
   return news
@@ -91,6 +113,244 @@ function extractResponseText(response: unknown): string {
 
   return "";
 }
+
+function decodeXmlEntities(value: string): string {
+  return value
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#x27;/gi, "'");
+}
+
+function stripHtml(value: string): string {
+  return decodeXmlEntities(value)
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getTagContent(block: string, tagName: string): string | undefined {
+  const match = block.match(new RegExp(`<${tagName}[^>]*>([\\s\\S]*?)</${tagName}>`, "i"));
+  return match?.[1]?.trim();
+}
+
+function getAtomLink(block: string): string | undefined {
+  const hrefMatch = block.match(/<link\b[^>]*href="([^"]+)"[^>]*\/?>/i);
+  return hrefMatch?.[1]?.trim();
+}
+
+function normalizeNewsItem(item: NewsItem, sourceName: string, fallbackId: string): NewsItem | null {
+  const title = item.title.trim();
+  if (!title) {
+    return null;
+  }
+
+  const summary = item.summary?.trim();
+  const url = item.url?.trim();
+  const publishedAt = item.publishedAt?.trim();
+
+  const normalized: NewsItem = {
+    title,
+    source: item.source?.trim() || sourceName,
+  };
+
+  const id = item.id?.trim() || fallbackId;
+  if (id) {
+    normalized.id = id;
+  }
+
+  if (summary) {
+    normalized.summary = stripHtml(summary);
+  }
+
+  if (publishedAt) {
+    normalized.publishedAt = publishedAt;
+  }
+
+  if (url) {
+    normalized.url = url;
+  }
+
+  return normalized;
+}
+
+function parseRssItems(xml: string, source: FeedSource): NewsItem[] {
+  const itemMatches = xml.match(/<item\b[\s\S]*?<\/item>/gi) ?? [];
+
+  return itemMatches
+    .map((block, index) => {
+      const rawItem: NewsItem = {
+        title: stripHtml(getTagContent(block, "title") ?? ""),
+        source: source.name,
+      };
+
+      const id = getTagContent(block, "guid") || getTagContent(block, "link");
+      const summary = getTagContent(block, "description") || getTagContent(block, "content:encoded");
+      const publishedAt = getTagContent(block, "pubDate");
+      const link = getTagContent(block, "link");
+
+      if (id) {
+        rawItem.id = id;
+      }
+
+      if (summary) {
+        rawItem.summary = summary;
+      }
+
+      if (publishedAt) {
+        rawItem.publishedAt = publishedAt;
+      }
+
+      if (link) {
+        rawItem.url = stripHtml(link);
+      }
+
+      return normalizeNewsItem(rawItem, source.name, `${source.id}-${index}`);
+    })
+    .filter((item): item is NewsItem => item !== null);
+}
+
+function parseAtomItems(xml: string, source: FeedSource): NewsItem[] {
+  const entryMatches = xml.match(/<entry\b[\s\S]*?<\/entry>/gi) ?? [];
+
+  return entryMatches
+    .map((block, index) => {
+      const rawItem: NewsItem = {
+        title: stripHtml(getTagContent(block, "title") ?? ""),
+        source: source.name,
+      };
+
+      const id = getTagContent(block, "id") || getAtomLink(block);
+      const summary = getTagContent(block, "summary") || getTagContent(block, "content");
+      const publishedAt = getTagContent(block, "updated") || getTagContent(block, "published");
+      const link = getAtomLink(block);
+
+      if (id) {
+        rawItem.id = id;
+      }
+
+      if (summary) {
+        rawItem.summary = summary;
+      }
+
+      if (publishedAt) {
+        rawItem.publishedAt = publishedAt;
+      }
+
+      if (link) {
+        rawItem.url = link;
+      }
+
+      return normalizeNewsItem(rawItem, source.name, `${source.id}-${index}`);
+    })
+    .filter((item): item is NewsItem => item !== null);
+}
+
+function parseFeed(xml: string, source: FeedSource): NewsItem[] {
+  if (/<entry\b/i.test(xml)) {
+    return parseAtomItems(xml, source);
+  }
+
+  return parseRssItems(xml, source);
+}
+
+function sortNewsItems(items: NewsItem[]): NewsItem[] {
+  return [...items].sort((a, b) => {
+    const timeA = a.publishedAt ? Date.parse(a.publishedAt) : Number.NaN;
+    const timeB = b.publishedAt ? Date.parse(b.publishedAt) : Number.NaN;
+
+    if (Number.isNaN(timeA) && Number.isNaN(timeB)) {
+      return a.title.localeCompare(b.title);
+    }
+
+    if (Number.isNaN(timeA)) {
+      return 1;
+    }
+
+    if (Number.isNaN(timeB)) {
+      return -1;
+    }
+
+    return timeB - timeA;
+  });
+}
+
+async function fetchFeed(source: FeedSource): Promise<NewsItem[]> {
+  const response = await fetch(source.url, {
+    headers: {
+      "User-Agent": "AI-news-podcast/1.0",
+      Accept: "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch ${source.name}: HTTP ${response.status}`);
+  }
+
+  const xml = await response.text();
+  return parseFeed(xml, source);
+}
+
+app.get("/news-feed", async (req: Request, res: Response<FeedResponse | { error: string }>) => {
+  const limitParam = req.query.limit;
+  const sourceParam = req.query.source;
+
+  const limit =
+    typeof limitParam === "string" && limitParam.trim()
+      ? Number.parseInt(limitParam, 10)
+      : DEFAULT_NEWS_LIMIT;
+
+  if (Number.isNaN(limit) || limit < 1 || limit > MAX_NEWS_LIMIT) {
+    res.status(400).json({ error: `limit must be a number between 1 and ${MAX_NEWS_LIMIT}` });
+    return;
+  }
+
+  const requestedSourceIds =
+    typeof sourceParam === "string" && sourceParam.trim()
+      ? sourceParam
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean)
+      : [];
+
+  const selectedSources =
+    requestedSourceIds.length > 0
+      ? NEWS_FEEDS.filter((source) => requestedSourceIds.includes(source.id))
+      : NEWS_FEEDS;
+
+  if (selectedSources.length === 0) {
+    res.status(400).json({ error: "No valid sources were requested" });
+    return;
+  }
+
+  try {
+    const results = await Promise.allSettled(selectedSources.map((source) => fetchFeed(source)));
+    const items = results.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
+    const uniqueItems = sortNewsItems(items)
+      .filter(
+        (item, index, all) =>
+          index === all.findIndex((candidate) => (candidate.url || candidate.id) === (item.url || item.id)),
+      )
+      .slice(0, limit);
+
+    if (uniqueItems.length === 0) {
+      res.status(502).json({ error: "No feed items could be fetched from the configured sources" });
+      return;
+    }
+
+    res.json({
+      sources: selectedSources.map(({ id, name }) => ({ id, name })),
+      items: uniqueItems,
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    console.error("News feed fetch error:", message);
+    res.status(500).json({ error: "Failed to fetch news feeds" });
+  }
+});
 
 app.post("/podcast-script", async (req: Request<{}, {}, PodcastScriptRequest>, res: Response) => {
   const {
